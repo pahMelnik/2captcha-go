@@ -3,6 +3,7 @@ package api2captcha
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -128,8 +129,6 @@ type (
 		Action     string
 		DataS      string
 		Score      float64
-		UserAgent  string
-		Cookies    string
 	}
 
 	Rotate struct {
@@ -230,26 +229,6 @@ type (
 		Base64 string
 		Lang   string
 	}
-
-	Prosopo struct {
-		Url     string
-		SiteKey string
-	}
-
-	Captchafox struct {
-		Url       string
-		SiteKey   string
-		Proxytype string
-		Proxy     string
-		UserAgent string
-	}
-
-	Temu struct {
-		Body  string
-		Part1 string
-		Part2 string
-		Part3 string
-	}
 )
 
 var (
@@ -267,7 +246,7 @@ func NewClient(apiKey string) *Client {
 		DefaultTimeout:   120,
 		PollingInterval:  10,
 		RecaptchaTimeout: 600,
-		httpClient:       http.DefaultClient,
+		httpClient:       &http.Client{},
 	}
 }
 
@@ -284,6 +263,7 @@ func NewClientExt(apiKey string, client *http.Client) *Client {
 }
 
 func (c *Client) res(req Request) (*string, error) {
+
 	rel := &url.URL{Path: "/res.php"}
 	uri := c.BaseURL.ResolveReference(rel)
 
@@ -299,25 +279,25 @@ func (c *Client) res(req Request) (*string, error) {
 	uri.RawQuery = values.Encode()
 
 	var err error = nil
-	resp, err = c.httpClient.Get(uri.String())
+	resp, err = http.Get(uri.String())
 	if err != nil {
-		return nil, ErrNetwork
+		return nil, fmt.Errorf("get request: %w", err)
 	}
 
 	defer resp.Body.Close()
 	body := &bytes.Buffer{}
 	_, err = body.ReadFrom(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
 	data := body.String()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ErrApi
+		return nil, fmt.Errorf("unexpected status: %d, body: %s", resp.StatusCode, data)
 	}
 
 	if strings.HasPrefix(data, "ERROR_") {
-		return nil, ErrApi
+		return nil, fmt.Errorf("api error: %s", data)
 	}
 
 	return &data, nil
@@ -332,6 +312,7 @@ func (c *Client) resAction(action string) (*string, error) {
 }
 
 func (c *Client) Send(req Request) (string, error) {
+
 	rel := &url.URL{Path: "/in.php"}
 	uri := c.BaseURL.ResolveReference(rel)
 
@@ -348,13 +329,13 @@ func (c *Client) Send(req Request) (string, error) {
 		for name, path := range req.Files {
 			file, err := os.Open(path)
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("open file: %w", err)
 			}
 			defer file.Close()
 
 			part, err := writer.CreateFormFile(name, filepath.Base(path))
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("create form file: %w", err)
 			}
 			_, err = io.Copy(part, file)
 		}
@@ -365,19 +346,19 @@ func (c *Client) Send(req Request) (string, error) {
 
 		err := writer.Close()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("close writer: %w", err)
 		}
 
 		request, err := http.NewRequest("POST", uri.String(), body)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("new request: %w", err)
 		}
 
 		request.Header.Set("Content-Type", writer.FormDataContentType())
 
 		resp, err = c.httpClient.Do(request)
 		if err != nil {
-			return "", ErrNetwork
+			return "", fmt.Errorf("do request: %w", err)
 		}
 	} else {
 		values := url.Values{}
@@ -386,9 +367,9 @@ func (c *Client) Send(req Request) (string, error) {
 		}
 
 		var err error = nil
-		resp, err = c.httpClient.PostForm(uri.String(), values)
+		resp, err = http.PostForm(uri.String(), values)
 		if err != nil {
-			return "", ErrNetwork
+			return "", fmt.Errorf("post form: %w", err)
 		}
 	}
 
@@ -396,20 +377,21 @@ func (c *Client) Send(req Request) (string, error) {
 	body := &bytes.Buffer{}
 	_, err := body.ReadFrom(resp.Body)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read response body: %w", err)
 	}
+
 	data := body.String()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", ErrApi
+		return "", fmt.Errorf("unexpected status: %d, body: %s", resp.StatusCode, data)
 	}
 
 	if strings.HasPrefix(data, "ERROR_") {
-		return "", ErrApi
+		return "", fmt.Errorf("api error: %s", data)
 	}
 
 	if !strings.HasPrefix(data, "OK|") {
-		return "", ErrApi
+		return "", fmt.Errorf("invalid response: %s", data)
 	}
 
 	return data[3:], nil
@@ -437,7 +419,7 @@ func (c *Client) Solve(req Request) (string, string, error) {
 
 	id, err := c.Send(req)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("send request: %w", err)
 	}
 
 	// don't wait for result if Callback is used
@@ -452,13 +434,14 @@ func (c *Client) Solve(req Request) (string, string, error) {
 
 	token, err := c.WaitForResult(id, timeout, c.PollingInterval)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("wait for result: %w", err)
 	}
 
 	return token, id, nil
 }
 
 func (c *Client) WaitForResult(id string, timeout int, interval int) (string, error) {
+
 	start := time.Now()
 	now := start
 	for now.Sub(start) < (time.Duration(timeout) * time.Second) {
@@ -472,7 +455,7 @@ func (c *Client) WaitForResult(id string, timeout int, interval int) (string, er
 
 		// ignore network errors
 		if err != nil && err != ErrNetwork {
-			return "", err
+			return "", fmt.Errorf("get result: %w", err)
 		}
 
 		now = time.Now()
@@ -488,7 +471,7 @@ func (c *Client) GetResult(id string) (*string, error) {
 
 	data, err := c.res(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get result: %w", err)
 	}
 
 	if *data == "CAPCHA_NOT_READY" {
@@ -496,7 +479,7 @@ func (c *Client) GetResult(id string) (*string, error) {
 	}
 
 	if !strings.HasPrefix(*data, "OK|") {
-		return nil, ErrApi
+		return nil, fmt.Errorf("invalid response: %s", *data)
 	}
 
 	reply := (*data)[3:]
@@ -817,12 +800,6 @@ func (c *ReCaptcha) ToRequest() Request {
 	if c.Score != 0 {
 		req.Params["min_score"] = strconv.FormatFloat(c.Score, 'f', -1, 64)
 	}
-	if c.UserAgent != "" {
-		req.Params["userAgent"] = c.UserAgent
-	}
-	if c.Cookies != "" {
-		req.Params["cookies"] = c.Cookies
-	}
 
 	return req
 }
@@ -1118,65 +1095,6 @@ func (c *Audio) ToRequest() Request {
 	}
 	if c.Lang != "" {
 		req.Params["lang"] = c.Lang
-	}
-
-	return req
-}
-
-func (c *Prosopo) ToRequest() Request {
-	req := Request{
-		Params: map[string]string{"method": "prosopo"},
-	}
-
-	if c.SiteKey != "" {
-		req.Params["sitekey"] = c.SiteKey
-	}
-	if c.Url != "" {
-		req.Params["pageurl"] = c.Url
-	}
-
-	return req
-}
-
-func (c *Captchafox) ToRequest() Request {
-	req := Request{
-		Params: map[string]string{"method": "captchafox"},
-	}
-
-	if c.SiteKey != "" {
-		req.Params["sitekey"] = c.SiteKey
-	}
-	if c.Url != "" {
-		req.Params["pageurl"] = c.Url
-	}
-	if c.Proxytype != "" {
-		req.Params["proxytype"] = c.Proxytype
-	}
-	if c.Proxy != "" {
-		req.Params["proxy"] = c.Proxy
-	}
-	if c.UserAgent != "" {
-		req.Params["userAgent"] = c.UserAgent
-	}
-
-	return req
-}
-
-func (c *Temu) ToRequest() Request {
-	req := Request{
-		Params: map[string]string{"method": "temuimage"},
-	}
-	if c.Body != "" {
-		req.Params["body"] = c.Body
-	}
-	if c.Part1 != "" {
-		req.Params["part1"] = c.Part1
-	}
-	if c.Part2 != "" {
-		req.Params["part2"] = c.Part2
-	}
-	if c.Part3 != "" {
-		req.Params["part3"] = c.Part3
 	}
 
 	return req
