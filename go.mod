@@ -1,3 +1,3 @@
-module github.com/2captcha/2captcha-go
+module github.com/pahmelnik/2captcha-go
 
 go 1.22.4
